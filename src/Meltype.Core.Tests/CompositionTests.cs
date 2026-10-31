@@ -755,6 +755,22 @@ internal static class CompositionTests
     }
 
     [Test]
+    public static void Prediction_IncludesTypedLettersAsIs()
+    {
+        // 予測の候補の 2 番目に、打った英字のままの候補も出す。候補が埋まっていても出す
+        var k = new Keyboard(predictor: new Predictor(null, null, null, kana => kana == "これが" ? ["一", "二", "三", "四", "五", "六"] : []));
+        k.Type("korega");
+        Assert.Equal("一,korega,二,三,四", string.Join(",", k.Host.View!.Predictions ?? []));
+        for (var i = 0; i < 2; i++) k.Press(VirtualKeys.Tab);
+        k.Press(VirtualKeys.Return);
+        Assert.Equal("korega", k.Host.Document);
+        // ほかに候補が無ければ出さない (Tab を予測に取らない)
+        var none = new Keyboard(predictor: new Predictor(null, null, null));
+        none.Type("korega");
+        Assert.True(none.Host.View!.Predictions is null, string.Join(",", none.Host.View.Predictions ?? []));
+    }
+
+    [Test]
     public static void Prediction_LearnsEnglishWordsAndUsesProperNounCase()
     {
         // 辞書に無い英単語も、一度確定すれば打ちかけから予測に出す (覚えたときの大文字小文字で)

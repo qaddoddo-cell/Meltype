@@ -3020,6 +3020,12 @@ public sealed class CompositionController
                 if (predictions.Count < Predictor.MaxPredictions && !predictions.Contains(word)) predictions.Add(word);
             }
         }
+        // 打った英字のまま (korega → korega) も選べるように、ほかの候補があれば 2 番目に足す (埋まっていれば最後の 1 つを外す)
+        if (predictions.Count > 0 && _text.Raw.All(char.IsAsciiLetter) && !predictions.Contains(_text.Raw))
+        {
+            if (predictions.Count >= Predictor.MaxPredictions) predictions.RemoveAt(predictions.Count - 1);
+            predictions.Insert(1, _text.Raw);
+        }
         _predictions = predictions;
     }
 
