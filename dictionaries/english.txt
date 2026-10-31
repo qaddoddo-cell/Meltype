@@ -26,7 +26,7 @@ clone fetch stash sync synced syncing status diff log init install uninstall upd
 release config configure setup start stop restart reset revert cherry pick tag tags dev prod staging api
 apis rest graphql grpc sdk cli gui ide vscode vim neovim emacs nano code coding vibe visual studio dotnet csharp cpp
 rust golang kotlin swift ruby rails php laravel django flask fastapi spring boot maven gradle cargo pip
-pipenv poetry conda venv jupyter notebook pandas numpy scipy matplotlib tensorflow pytorch keras openai
+pipenv poetry conda venv jupyter notebook pandas numpy scipy matplotlib tensorflow pytorch keras openai deepseek
 anthropic claude chatgpt gpt llm discord slack teams zoom notion figma jira confluence trello asana
 google youtube twitter facebook instagram amazon microsoft apple iphone ipad chrome firefox edge safari
 email gmail outlook excel word powerpoint onedrive dropbox admin root sudo chmod chown mkdir rmdir grep

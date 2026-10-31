@@ -730,6 +730,78 @@ internal static class CompositionTests
         Assert.True(!new Meltype.Config.Settings().EnglishNamePredictions, "既定で OFF");
 
     [Test]
+    public static void Prediction_UsesSystemPredictionsAfterLearned()
+    {
+        // OS の予測 (Windows の TextPredictionGenerator) で、学習していない語も打ちかけから出す。学習した語句が先、かなのままの候補は出さない
+        var phrases = new PhraseHistory(null);
+        phrases.Remember("よそくへんかんを", "予測変換を");
+        var predictor = new Predictor(phrases, null, null, kana => kana == "よそく" ? ["予測", "よそく", "予測変換を", "予測変換"] : []);
+        var predictions = predictor.PredictJapanese("よそく");
+        Assert.Equal("予測変換を,予測,予測変換", string.Join(",", predictions));
+    }
+
+    [Test]
+    public static void Prediction_SystemCandidateIsNotRememberedWithPartialReading()
+    {
+        // OS の予測の候補は読みが分からないので、選んで確定しても打ちかけの読み (これが) では覚えない
+        var phrases = new PhraseHistory(null);
+        var k = new Keyboard(predictor: new Predictor(phrases, null, null, kana => kana == "これが" ? ["これが一番"] : []));
+        k.Type("korega");
+        Assert.True(k.Host.View!.Predictions?.Contains("これが一番") == true, string.Join(",", k.Host.View.Predictions ?? []));
+        k.Press(VirtualKeys.Tab);
+        k.Press(VirtualKeys.Return);
+        Assert.Equal("これが一番", k.Host.Document);
+        Assert.Equal(0, phrases.Count);
+    }
+
+    [Test]
+    public static void Prediction_LearnsEnglishWordsAndUsesProperNounCase()
+    {
+        // 辞書に無い英単語も、一度確定すれば打ちかけから予測に出す (覚えたときの大文字小文字で)
+        var phrases = new PhraseHistory(null);
+        phrases.RememberEnglish("Zyxwvut");
+        var predictor = new Predictor(phrases, null, null);
+        Assert.Equal("Zyxwvut", predictor.PredictEnglish("zyxw").FirstOrDefault());
+        phrases.RememberEnglish("abc");
+        Assert.Equal(1, phrases.Count, "短い語は覚えない");
+        // 小文字で打てば、固有名詞は正しい大文字小文字で出す
+        var k = new Keyboard(predictor: new Predictor(null, null, null));
+        k.Host.PrecedingText = "I use ";
+        k.Type("micros");
+        Assert.True(k.Host.View!.Predictions?.Contains("Microsoft") == true, string.Join(",", k.Host.View.Predictions ?? []));
+    }
+
+    [Test]
+    public static void Prediction_EnglishLearningDeleteAndNameOrder()
+    {
+        // 英単語の予測の候補を選んで確定したら覚える
+        var phrases = new PhraseHistory(null);
+        var k = new Keyboard(predictor: new Predictor(phrases, null, null));
+        k.Host.PrecedingText = "I made ";
+        k.Type("decis");
+        k.Press(VirtualKeys.Tab);
+        var chosen = k.Showing;
+        k.Press(VirtualKeys.Return);
+        Assert.Equal(1, phrases.Count, "英単語の候補を確定したら覚える: " + chosen);
+
+        // 大文字小文字を変えて見せた候補 (Microsoft) を Delete しても、覚えた綴り (microsoft) を忘れる
+        var english = new PhraseHistory(null);
+        english.RememberEnglish("microsoft");
+        Assert.Equal(1, english.Forget("Microsoft"));
+
+        // 大文字小文字だけ違う同じ語は 1 つだけ出す
+        english.RememberEnglish("Zyxwvut");
+        english.RememberEnglish("zyxwvut");
+        Assert.Equal(1, new Predictor(english, null, null).PredictEnglish("zyxw").Count(w => w.Equals("zyxwvut", StringComparison.OrdinalIgnoreCase)));
+
+        // OS の予測が多くても、社名の候補 (#890) を先に出す
+        var many = new Predictor(null, null, null, kana => ["一", "二", "三", "四", "五", "六"]);
+        var on = new Keyboard(predictor: many, englishNamePredictions: true);
+        on.Type("shao");
+        Assert.True(on.Host.View!.Predictions?.Contains("Xiaomi") == true, string.Join(",", on.Host.View.Predictions ?? []));
+    }
+
+    [Test]
     public static void Prediction_OffWithoutPredictor()
     {
         var k = new Keyboard();

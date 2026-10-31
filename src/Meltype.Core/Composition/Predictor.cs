@@ -48,6 +48,21 @@ public sealed class PhraseHistory
     public void Remember(string reading, string text)
     {
         if (reading.Length < 3 || text.Length == 0 || text == reading || text.Contains('\t') || text.Contains('\n')) return;
+        Store(reading, text);
+    }
+
+    /// <summary>確定した英単語 (deepseek, DeepSeek) を、小文字の綴りを読みにして覚える (打ちかけの英字から続きを出すため)。</summary>
+    public void RememberEnglish(string word)
+    {
+        if (word.Length < MinEnglishWordLength || !word.All(char.IsAsciiLetterOrDigit) || !word.Any(char.IsAsciiLetter)) return;
+        Store(word.ToLowerInvariant(), word);
+    }
+
+    /// <summary>覚える英単語の最短の長さ (短い語は打ったほうが早い)。</summary>
+    public const int MinEnglishWordLength = 5;
+
+    private void Store(string reading, string text)
+    {
         var key = (reading, text);
         lock (_gate)
         {
@@ -95,13 +110,17 @@ public sealed class PhraseHistory
     public string? ReadingOf(string text, string typed) =>
         _entries.Keys.Where(k => k.Text == text && k.Reading.StartsWith(typed, StringComparison.Ordinal)).Select(k => k.Reading).FirstOrDefault();
 
-    /// <summary>覚えている語句 text を、読みにかかわらずすべて忘れる (予測変換の候補を Delete で消す)。忘れた数を返す。</summary>
+    /// <summary>
+    /// 覚えている語句 text を、読みにかかわらずすべて忘れる (予測変換の候補を Delete で消す)。忘れた数を返す。
+    /// 英単語は大文字小文字を変えて見せることがある (microsoft → Microsoft) ので、綴りが同じものを忘れる。
+    /// </summary>
     public int Forget(string text)
     {
         List<(string Reading, string Text)> keys;
+        var english = text.All(char.IsAsciiLetterOrDigit);
         lock (_gate)
         {
-            keys = _entries.Keys.Where(k => k.Text == text).ToList();
+            keys = _entries.Keys.Where(k => k.Text == text || english && string.Equals(k.Text, text, StringComparison.OrdinalIgnoreCase)).ToList();
             if (keys.Count == 0) return 0;
             foreach (var key in keys) _entries.Remove(key);
             _version++;
@@ -159,6 +178,7 @@ public sealed class PhraseHistory
 /// <summary>
 /// 予測変換の候補 (issue #38)。打っている途中の読み・英字から、続きの候補を出す。
 ///   日本語: 前に確定した語句 (PhraseHistory) → ユーザー辞書 → 選び直した変換の学習 の、読みが前方一致する語
+///           → OS の予測 (Windows では TextPredictionGenerator。学習していない語も出す)
 ///   英語: よく使う英単語 (english.txt) → 同梱の英単語の一覧 (english-words.txt) の、前方一致する語 (短い順)
 ///   英字の名前 (設定が ON のとき、issue #890): 社名・サービス名 (brands.txt) → 英字で書く語 (loanwords.txt) の、読みが前方一致する語 (しゃお → Xiaomi)
 /// </summary>
@@ -176,17 +196,21 @@ public sealed class Predictor
     private readonly PhraseHistory? _phrases;
     private readonly UserDictionary? _userDictionary;
     private readonly ConversionHistory? _history;
+    private readonly Func<string, IReadOnlyList<string>>? _system;
     private readonly Lazy<(string[] Common, string[] All)> _english;
     private readonly Lazy<EnglishName[]> _englishNames = new(LoadEnglishNames);
 
     /// <summary>英字の名前の読みと語。Brand は社名・サービス名の辞書 (brands.txt) のもの、Order は辞書に書いた順。</summary>
     private readonly record struct EnglishName(string Reading, string Word, bool Brand, int Order);
 
-    public Predictor(PhraseHistory? phrases, UserDictionary? userDictionary, ConversionHistory? history)
+    /// <param name="system">OS の予測 (打ちかけの読み → 候補)。無ければ null。</param>
+    public Predictor(PhraseHistory? phrases, UserDictionary? userDictionary, ConversionHistory? history,
+        Func<string, IReadOnlyList<string>>? system = null)
     {
         _phrases = phrases;
         _userDictionary = userDictionary;
         _history = history;
+        _system = system;
         _english = new(() =>
         {
             static string[] Sorted(IEnumerable<string> words) =>
@@ -200,7 +224,8 @@ public sealed class Predictor
     public PhraseHistory? Phrases => _phrases;
 
     /// <summary>打ちかけの読み (ひらがな) の続きの候補。</summary>
-    public IReadOnlyList<string> PredictJapanese(string kana)
+    /// <param name="system">false なら OS の予測を足さない (ほかの候補を先に足してから <see cref="PredictSystem"/> で埋めるとき)。</param>
+    public IReadOnlyList<string> PredictJapanese(string kana, bool system = true)
     {
         if (kana.Length < MinKanaLength) return [];
         var result = new List<string>();
@@ -217,8 +242,14 @@ public sealed class Predictor
             Add(_userDictionary.Words.Where(w => w.Reading.Length > kana.Length && w.Reading.StartsWith(kana, StringComparison.Ordinal)).Select(w => w.Word));
         if (_history is not null)
             Add(_history.TextsStartingWith(kana));
+        // 前の元で埋まっていれば、OS に問い合わせない (待たせない)
+        if (system && result.Count < MaxPredictions) Add(PredictSystem(kana));
         return result;
     }
+
+    /// <summary>OS の予測 (Windows の TextPredictionGenerator)。読みのまま (かなのまま) の候補は、打っている文字と同じなので出さない。</summary>
+    public IEnumerable<string> PredictSystem(string kana) =>
+        _system is null || kana.Length < MinKanaLength ? [] : _system(kana).Where(w => w != kana);
 
     /// <summary>打ちかけの英単語の続きの候補 (decis → decision, decisions …)。打った大文字 (先頭・すべて) に合わせる。</summary>
     public IReadOnlyList<string> PredictEnglish(string raw)
@@ -226,14 +257,19 @@ public sealed class Predictor
         if (raw.Length < MinEnglishLength || !raw.All(char.IsAsciiLetter)) return [];
         var lower = raw.ToLowerInvariant();
         var (common, all) = _english.Value;
+        // 前に確定した英単語 (辞書に無い deepseek なども) を先に、覚えたときの大文字小文字で
+        var learned = _phrases?.StartingWith(lower).Where(w => w.All(char.IsAsciiLetterOrDigit))
+            .DistinctBy(w => w.ToLowerInvariant()).Take(MaxPredictions).ToList() ?? [];
         var words = StartingWith(common, lower).Concat(StartingWith(all, lower))
             .Where(w => w.Length > lower.Length).Distinct()
             // よく使う英単語の一覧のものを先に、それぞれ短い順
             .Select((w, i) => (Word: w, Common: Array.BinarySearch(common, w, StringComparer.Ordinal) >= 0, Index: i))
             .OrderByDescending(w => w.Common).ThenBy(w => w.Word.Length).ThenBy(w => w.Index)
+            .Select(w => w.Word);
+        return learned.Concat(words.Where(w => !learned.Contains(w, StringComparer.OrdinalIgnoreCase)))
             .Take(MaxPredictions)
-            .Select(w => MatchCase(w.Word, raw));
-        return words.ToList();
+            .Select(w => MatchCase(w, raw))
+            .ToList();
     }
 
     /// <summary>

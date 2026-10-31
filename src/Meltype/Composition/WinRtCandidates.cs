@@ -18,15 +18,31 @@ namespace Meltype.Composition;
 ///   IAsyncInfo                      : IInspectable { Id, Status, ErrorCode, Cancel, Close }     (6..10)
 ///   IVectorView&lt;HSTRING&gt;           : IInspectable { GetAt, Size, IndexOf, GetMany }            (6..9)
 /// 使えない環境では空の一覧を返すだけにする。
+/// 予測の API (Windows.Data.Text.TextPredictionGenerator: よそく → 予測 予測変換 …) も関数表の並びが同じなので、
+/// <see cref="Prediction"/> で作れば同じ呼び方で使える。
 /// </summary>
 public sealed unsafe class WinRtCandidates : IDisposable
 {
-    private static readonly Guid IidFactory = new("fcaa3781-3083-49ab-be15-56dfbbb74d6f");
+    private static readonly Guid IidConversionFactory = new("fcaa3781-3083-49ab-be15-56dfbbb74d6f");
+    private static readonly Guid IidPredictionFactory = new("7257b416-8ba2-4751-9d30-9d85435653a2");
     private static readonly Guid IidAsyncInfo = new("00000036-0000-0000-C000-000000000046");
     private const int TimeoutMs = 500;
 
+    private readonly string _className;
+    private readonly Guid _iidFactory;
     private IntPtr _generator;
     private bool _unavailable;
+
+    public WinRtCandidates() : this("Windows.Data.Text.TextConversionGenerator", IidConversionFactory) { }
+
+    private WinRtCandidates(string className, Guid iidFactory)
+    {
+        _className = className;
+        _iidFactory = iidFactory;
+    }
+
+    /// <summary>打ちかけの読みの予測 (TextPredictionGenerator) を取るもの。</summary>
+    public static WinRtCandidates Prediction() => new("Windows.Data.Text.TextPredictionGenerator", IidPredictionFactory);
 
     public bool IsAvailable => !_unavailable;
 
@@ -86,7 +102,7 @@ public sealed unsafe class WinRtCandidates : IDisposable
         catch (Exception ex)
         {
             _unavailable = true;
-            Diagnostics.Log.Warn($"Windows の変換候補 API を使えません: {ex.Message}");
+            Diagnostics.Log.Warn($"Windows の変換候補 API ({_className}) を使えません: {ex.Message}");
             return [];
         }
     }
@@ -94,14 +110,14 @@ public sealed unsafe class WinRtCandidates : IDisposable
     private IntPtr Generator()
     {
         if (_generator != IntPtr.Zero) return _generator;
-        var className = CreateString("Windows.Data.Text.TextConversionGenerator");
+        var className = CreateString(_className);
         try
         {
-            var iid = IidFactory;
+            var iid = _iidFactory;
             if (RoGetActivationFactory(className, ref iid, out var factory) < 0 || factory == IntPtr.Zero)
             {
                 _unavailable = true;
-                Diagnostics.Log.Warn("Windows の変換候補 API (TextConversionGenerator) が見つかりません。");
+                Diagnostics.Log.Warn($"Windows の変換候補 API ({_className}) が見つかりません。");
                 return IntPtr.Zero;
             }
             try

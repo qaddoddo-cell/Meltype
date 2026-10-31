@@ -2584,7 +2584,13 @@ public sealed class CompositionController
     /// <summary>漢字を含む日本語の語句を確定したら、予測変換のために読みと一緒に覚える (英字だけ・かなのままは覚えない)。</summary>
     private void RememberPhrase(string reading, string text, bool english)
     {
-        if (english || !_options.Learning() || _options.Predictor?.Phrases is not { } phrases || !_options.Predictions()) return;
+        if (!_options.Learning() || _options.Predictor?.Phrases is not { } phrases || !_options.Predictions()) return;
+        // 英単語 1 語 (deepseek) は綴りで覚え、次から打ちかけ (deeps) で予測に出す
+        if (english)
+        {
+            phrases.RememberEnglish(text.Trim());
+            return;
+        }
         if (!text.Any(c => c is >= '一' and <= '鿿' or >= '㐀' and <= '䶿') || reading.Length < 3 || reading.Any(char.IsAsciiLetter)) return;
         phrases.Remember(reading, text);
     }
@@ -2595,13 +2601,16 @@ public sealed class CompositionController
         var english = prediction.All(c => c < 0x80);
         var reading = _text.AllKana(final: true);
         _predictionIndex = -1;
-        if (!english && _options.Learning()) _options.Predictor?.Phrases?.Remember(PredictionReading(prediction, reading), prediction);
+        // 覚え直すのは、前に確定して読みが分かっている語句だけ。読みが分からない候補 (OS の予測・ユーザー辞書など) を
+        // 打ちかけの読みで覚えると、それより長く打ったときに出なくなる (これが → これが一番 を「これが」で覚えると「これがい」では出ない)
+        if (_options.Learning() && _options.Predictor?.Phrases is { } phrases)
+        {
+            // 英単語は綴りで覚え直す (選んだ deepseek・Microsoft を次からより前に出す)
+            if (english) phrases.RememberEnglish(prediction);
+            else if (phrases.ReadingOf(prediction, reading) is { } known) phrases.Remember(known, prediction);
+        }
         CommitText(prediction, english, english ? prediction : _text.Raw, chosen: true);
     }
-
-    /// <summary>予測の候補の読み (前に確定したときの読み)。分からなければ打ちかけの読み。</summary>
-    private string PredictionReading(string prediction, string typed) =>
-        _options.Predictor?.Phrases?.ReadingOf(prediction, typed) ?? typed;
 
     /// <summary>
     /// 英単語で終わる文字列の最後の語が、よくある打ち間違い (teh、recieve) なら正しい綴りにする (Space で確定するとき)。
@@ -2977,14 +2986,14 @@ public sealed class CompositionController
         if (_text.IsAlphanumeric)
         {
             // 英単語 1 語の打ちかけ (decis → decisions)
-            if (_text.Raw.All(char.IsAsciiLetter)) _predictions = predictor.PredictEnglish(_text.Raw);
+            if (_text.Raw.All(char.IsAsciiLetter)) _predictions = EnglishPredictions(predictor);
             return;
         }
         var kana = _text.AllKana(final: false);
         var predictions = new List<string>();
         if (kana.All(KanaChars.IsHiraganaOrLongMark))
         {
-            predictions.AddRange(predictor.PredictJapanese(kana));
+            predictions.AddRange(predictor.PredictJapanese(kana, system: false));
             // 英字で書く社名・サービス名 (しゃお → Xiaomi)。日本語の予測の後ろに足す
             if (_options.EnglishNamePredictions())
             {
@@ -2993,17 +3002,32 @@ public sealed class CompositionController
                     if (predictions.Count < Predictor.MaxPredictions && !predictions.Contains(word)) predictions.Add(word);
                 }
             }
+            // 残りを OS の予測で埋める (先に埋めると、社名の候補が出なくなる)
+            if (predictions.Count < Predictor.MaxPredictions)
+            {
+                foreach (var word in predictor.PredictSystem(kana))
+                {
+                    if (predictions.Count >= Predictor.MaxPredictions) break;
+                    if (!predictions.Contains(word)) predictions.Add(word);
+                }
+            }
         }
         // 長い英単語は、打ち終わるまでローマ字として見えていることがある (decis → でしs)。英字だけを 4 文字以上打っていれば英単語の続きも出す
         if (_text.Raw.Length >= 4 && _text.Raw.All(char.IsAsciiLetter))
         {
-            foreach (var word in predictor.PredictEnglish(_text.Raw))
+            foreach (var word in EnglishPredictions(predictor))
             {
                 if (predictions.Count < Predictor.MaxPredictions && !predictions.Contains(word)) predictions.Add(word);
             }
         }
         _predictions = predictions;
     }
+
+    /// <summary>英単語の打ちかけの続きの候補。小文字で打っていれば、固有名詞は正しい大文字小文字にする (microsoft → Microsoft)。</summary>
+    private List<string> EnglishPredictions(Predictor predictor) =>
+        predictor.PredictEnglish(_text.Raw)
+            .Select(w => _text.Raw.All(char.IsAsciiLetterLower) && w.All(char.IsAsciiLetterLower) ? _detector.ProperNouns.Canonical(w) ?? w : w)
+            .Distinct().ToList();
 
     private string PredictionKey() => _text.Raw + "\u0001" + _text.Mode;
 
