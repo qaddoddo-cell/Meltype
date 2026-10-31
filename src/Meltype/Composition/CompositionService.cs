@@ -26,6 +26,7 @@ internal sealed class CompositionService : ICompositionHost, IDisposable
     private readonly MsImeKanjiConverter _converter = new();
     private readonly KeyInjector _injector = new();
     private readonly WinRtCandidates _windowsCandidates = new();
+    private readonly WinRtCandidates _windowsPredictions = WinRtCandidates.Prediction();
     // Mozc (同梱の mozc/meltype_mozc_helper.exe) と Microsoft IME を組み合わせた変換エンジン。
     private readonly MozcConverter _mozc = new(Path.Combine(AppContext.BaseDirectory, "mozc", "meltype_mozc_helper.exe"), Path.Combine(Config.AppPaths.DataDirectory, "mozc"));
     private HybridConverter _hybrid = null!;
@@ -109,7 +110,8 @@ internal sealed class CompositionService : ICompositionHost, IDisposable
             ClipboardCandidates = options.ClipboardCandidates,
             Punctuation = options.Punctuation,
             TranslationHistory = options.TranslationHistory ?? new TranslationHistory(Config.AppPaths.TranslationHistoryFile),
-            Predictor = options.Predictor ?? new Predictor(new PhraseHistory(Config.AppPaths.PhraseHistoryFile), UserDictionary, History),
+            Predictor = options.Predictor ?? new Predictor(new PhraseHistory(Config.AppPaths.PhraseHistoryFile), UserDictionary, History,
+                kana => _windowsPredictions.Get(kana, Predictor.MaxPredictions * 2)),
             Predictions = options.Predictions,
             EnglishNamePredictions = options.EnglishNamePredictions,
         };
@@ -906,6 +908,7 @@ internal sealed class CompositionService : ICompositionHost, IDisposable
         Focus.Dispose();
         _converter.Dispose();
         _windowsCandidates.Dispose();
+        _windowsPredictions.Dispose();
         _mozc.Dispose();
         _zenzai.Dispose();
         _window.Dispose();
